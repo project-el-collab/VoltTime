@@ -1,14 +1,45 @@
 import { useEffect, useMemo, useState } from 'react'
 import './App.css'
-import { supabase } from './supabaseClient'
+import { hasSupabaseConfig, supabase, supabaseConfigError } from './supabaseClient'
 
 const initialBookings = []
+
+const getCurrentOrigin = () => (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000')
+
+const getCurrentAuthUserId = async () => {
+  if (!hasSupabaseConfig) return null
+
+  const { data: { user }, error: userError } = await supabase.auth.getUser()
+  if (!userError && user?.id) return user.id
+
+  const { data: { session } } = await supabase.auth.getSession()
+  return session?.user?.id || null
+}
+
+const ensureProfileExists = async (userId, profileDetails = {}) => {
+  if (!hasSupabaseConfig || !userId) return null
+
+  const payload = {
+    id: userId,
+    email: profileDetails.email || '',
+    first_name: profileDetails.first_name || 'Demo',
+    last_name: profileDetails.last_name || 'User',
+    role: profileDetails.role || 'co-worker',
+  }
+
+  const { error } = await supabase.from('profiles').upsert(payload, { onConflict: 'id' })
+  if (error) throw error
+
+  return payload
+}
 
 function App() {
   const [view, setView] = useState('register')
   const [user, setUser] = useState(null)
   const [bookings, setBookings] = useState(initialBookings)
-  const [statusMessage, setStatusMessage] = useState('Create an account or sign in to continue.')
+  const [statusMessage, setStatusMessage] = useState(
+    hasSupabaseConfig ? 'Create an account or sign in to continue.' : supabaseConfigError
+  )
   const [form, setForm] = useState({
     username: '',
     password: '',
@@ -30,6 +61,18 @@ function App() {
   }), [bookings])
 
   useEffect(() => {
+    if (!hasSupabaseConfig) {
+      setStatusMessage(supabaseConfigError)
+      return
+    }
+
+    if (typeof window !== 'undefined' && window.location.hash.includes('error=')) {
+      const params = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+      if (params.get('error') === 'access_denied') {
+        setStatusMessage('Email confirmation link could not be completed. Please add your Vercel URL to Supabase Auth redirect settings and try again.')
+      }
+    }
+
     const loadBookings = async () => {
       try {
         const { data, error } = await supabase.from('bookings').select('*').order('created_at', { ascending: false })
@@ -52,9 +95,8 @@ function App() {
     }
 
     const syncAuthUser = async () => {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (session?.user) {
-        const userId = session.user.id
+      const userId = await getCurrentAuthUserId()
+      if (userId) {
         const { data: profileData, error: profileError } = await supabase
           .from('profiles')
           .select('*')
@@ -85,19 +127,26 @@ function App() {
       return
     }
 
+    if (!hasSupabaseConfig) {
+      setStatusMessage(supabaseConfigError)
+      return
+    }
+
     try {
       const { data, error } = await supabase.auth.signUp({
         email: form.username,
         password: form.password,
+        options: {
+          emailRedirectTo: getCurrentOrigin(),
+        },
       })
 
       if (error) throw error
 
-      const userId = data?.user?.id
+      const userId = data?.user?.id || data?.session?.user?.id
 
       if (userId) {
-        await supabase.from('profiles').insert({
-          id: userId,
+        await ensureProfileExists(userId, {
           email: form.username,
           first_name: form.firstName,
           last_name: form.lastName,
@@ -126,6 +175,11 @@ function App() {
       return
     }
 
+    if (!hasSupabaseConfig) {
+      setStatusMessage(supabaseConfigError)
+      return
+    }
+
     try {
       const { data, error } = await supabase.auth.signInWithPassword({
         email: form.username,
@@ -142,6 +196,15 @@ function App() {
         .single()
 
       if (profileError && profileError.code !== 'PGRST116') throw profileError
+
+      if (userId) {
+        await ensureProfileExists(userId, {
+          email: form.username,
+          first_name: profileData?.first_name || 'Demo',
+          last_name: profileData?.last_name || 'User',
+          role: profileData?.role || 'co-worker',
+        })
+      }
 
       setUser({
         username: form.username,
@@ -164,14 +227,26 @@ function App() {
       return
     }
 
+    if (!hasSupabaseConfig) {
+      setStatusMessage(supabaseConfigError)
+      return
+    }
+
     try {
-      const { data: sessionData } = await supabase.auth.getSession()
-      const currentUserId = sessionData?.session?.user?.id
+      const currentUserId = await getCurrentAuthUserId()
 
       if (!currentUserId) {
         setStatusMessage('Your session expired. Please sign in again.')
         return
       }
+
+      const { data: userData } = await supabase.auth.getUser()
+      await ensureProfileExists(currentUserId, {
+        email: user?.username || userData?.user?.email || '',
+        first_name: user?.firstName || 'Demo',
+        last_name: user?.lastName || 'User',
+        role: user?.role || 'co-worker',
+      })
 
       const { error } = await supabase.from('bookings').insert({
         user_id: currentUserId,
