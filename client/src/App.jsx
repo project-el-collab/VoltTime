@@ -4,6 +4,13 @@ import { hasSupabaseConfig, supabase, supabaseConfigError } from './supabaseClie
 
 const initialBookings = []
 
+const formatBookingStatus = (status) => {
+  const value = String(status || 'Pending').toLowerCase()
+  if (value === 'approved') return 'Approved'
+  if (value === 'rejected') return 'Rejected'
+  return 'Pending'
+}
+
 const getCurrentOrigin = () => (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000')
 
 const getCurrentAuthUserId = async () => {
@@ -14,6 +21,15 @@ const getCurrentAuthUserId = async () => {
 
   const { data: { session } } = await supabase.auth.getSession()
   return session?.user?.id || null
+}
+
+const getEffectiveRole = (email = '', setupCode = '') => {
+  const adminEmail = import.meta.env.VITE_ADMIN_EMAIL?.trim().toLowerCase() || ''
+  const adminSetupCode = import.meta.env.VITE_ADMIN_SETUP_CODE?.trim() || ''
+
+  if (adminEmail && email.toLowerCase() === adminEmail) return 'admin'
+  if (adminSetupCode && setupCode && setupCode === adminSetupCode) return 'admin'
+  return 'co-worker'
 }
 
 const ensureProfileExists = async (userId, profileDetails = {}) => {
@@ -37,6 +53,8 @@ function App() {
   const [view, setView] = useState('register')
   const [user, setUser] = useState(null)
   const [bookings, setBookings] = useState(initialBookings)
+  const [adminUsers, setAdminUsers] = useState([])
+  const [authMode, setAuthMode] = useState('user')
   const [statusMessage, setStatusMessage] = useState(
     hasSupabaseConfig ? 'Create an account or sign in to continue.' : supabaseConfigError
   )
@@ -45,6 +63,7 @@ function App() {
     password: '',
     firstName: '',
     lastName: '',
+    adminSetupCode: '',
     place: '',
     projectName: '',
     startDate: '',
@@ -54,11 +73,35 @@ function App() {
     notes: '',
   })
 
+  const [adminForm, setAdminForm] = useState({
+    email: '',
+    password: '',
+    firstName: '',
+    lastName: '',
+  })
+
   const stats = useMemo(() => ({
     total: bookings.length,
     approved: bookings.filter((b) => b.status === 'Approved').length,
     pending: bookings.filter((b) => b.status === 'Pending').length,
   }), [bookings])
+
+  const loadAdminUsers = async () => {
+    if (!hasSupabaseConfig) return
+
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id, email, first_name, last_name, role')
+        .eq('role', 'admin')
+        .order('email', { ascending: true })
+
+      if (error) throw error
+      setAdminUsers(data || [])
+    } catch (error) {
+      console.info('Admin users not yet available:', error)
+    }
+  }
 
   useEffect(() => {
     if (!hasSupabaseConfig) {
@@ -73,9 +116,14 @@ function App() {
       }
     }
 
-    const loadBookings = async () => {
+    const loadBookings = async (currentUserId, role = 'co-worker') => {
       try {
-        const { data, error } = await supabase.from('bookings').select('*').order('created_at', { ascending: false })
+        let query = supabase.from('bookings').select('*')
+        if (role !== 'admin' && currentUserId) {
+          query = query.eq('user_id', currentUserId)
+        }
+
+        const { data, error } = await query.order('created_at', { ascending: false })
         if (error) throw error
         if (data) {
           const mapped = data.map((booking) => ({
@@ -85,7 +133,7 @@ function App() {
             start: booking.start_time,
             end: booking.end_time,
             notes: booking.notes || '',
-            status: booking.status || 'pending',
+            status: formatBookingStatus(booking.status),
           }))
           setBookings(mapped)
         }
@@ -104,19 +152,27 @@ function App() {
           .single()
 
         if (!profileError || profileError.code === 'PGRST116') {
+          const role = profileData?.role || 'co-worker'
           setUser({
-            username: session.user.email || '',
+            username: profileData?.email || '',
             firstName: profileData?.first_name || 'Demo',
             lastName: profileData?.last_name || 'User',
-            role: profileData?.role || 'co-worker',
+            role,
             id: userId,
           })
-          setView('dashboard')
+          setView(role === 'admin' ? 'admin' : 'dashboard')
+          if (role === 'admin') {
+            await loadAdminUsers()
+          } else {
+            setAdminUsers([])
+          }
+          await loadBookings(userId, role)
         }
+      } else {
+        setBookings([])
       }
     }
 
-    loadBookings()
     syncAuthUser()
   }, [])
 
@@ -131,6 +187,8 @@ function App() {
       setStatusMessage(supabaseConfigError)
       return
     }
+
+    const role = getEffectiveRole(form.username, form.adminSetupCode)
 
     try {
       const { data, error } = await supabase.auth.signUp({
@@ -150,7 +208,7 @@ function App() {
           email: form.username,
           first_name: form.firstName,
           last_name: form.lastName,
-          role: 'co-worker',
+          role,
         })
       }
 
@@ -158,13 +216,73 @@ function App() {
         username: form.username,
         firstName: form.firstName,
         lastName: form.lastName,
-        role: 'co-worker',
+        role,
         id: userId || `local-${Date.now()}`,
       })
-      setView('dashboard')
-      setStatusMessage('Registration submitted. Check your Supabase auth setup for email confirmation.')
+      setView(role === 'admin' ? 'admin' : 'dashboard')
+      setForm((prev) => ({ ...prev, adminSetupCode: '' }))
+      setStatusMessage(role === 'admin'
+        ? 'Admin account created. You can now review bookings.'
+        : 'Registration submitted. Check your Supabase auth setup for email confirmation.')
     } catch (error) {
       setStatusMessage(error.message || 'Registration failed.')
+    }
+  }
+
+  const handleAdminLogin = async (event) => {
+    event.preventDefault()
+    if (!form.username || !form.password) {
+      setStatusMessage('Please enter your admin email and password.')
+      return
+    }
+
+    if (!hasSupabaseConfig) {
+      setStatusMessage(supabaseConfigError)
+      return
+    }
+
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: form.username,
+        password: form.password,
+      })
+
+      if (error) throw error
+
+      const userId = data?.user?.id
+      const { data: profileData, error: profileError } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .single()
+
+      if (profileError && profileError.code !== 'PGRST116') throw profileError
+
+      const role = profileData?.role || 'co-worker'
+      if (role !== 'admin') {
+        throw new Error('This account is not an admin account.')
+      }
+
+      await ensureProfileExists(userId, {
+        email: form.username,
+        first_name: profileData?.first_name || 'Demo',
+        last_name: profileData?.last_name || 'User',
+        role: 'admin',
+      })
+
+      setUser({
+        username: form.username,
+        firstName: profileData?.first_name || 'Demo',
+        lastName: profileData?.last_name || 'User',
+        role: 'admin',
+        id: userId || `local-${Date.now()}`,
+      })
+      setAuthMode('user')
+      setView('admin')
+      await loadAdminUsers()
+      setStatusMessage('Admin signed in successfully.')
+    } catch (error) {
+      setStatusMessage(error.message || 'Admin login failed.')
     }
   }
 
@@ -213,10 +331,63 @@ function App() {
         role: profileData?.role || 'co-worker',
         id: userId || `local-${Date.now()}`,
       })
-      setView('dashboard')
+      setView(profileData?.role === 'admin' ? 'admin' : 'dashboard')
       setStatusMessage('Signed in successfully.')
     } catch (error) {
       setStatusMessage(error.message || 'Login failed.')
+    }
+  }
+
+  const handleCreateAdminUser = async (event) => {
+    event.preventDefault()
+
+    if (!user?.role || user.role !== 'admin') {
+      setStatusMessage('Only admin users can create other admin accounts.')
+      return
+    }
+
+    if (!adminForm.email || !adminForm.password || !adminForm.firstName || !adminForm.lastName) {
+      setStatusMessage('Please fill all admin creation fields.')
+      return
+    }
+
+    try {
+      const { data, error } = await supabase.auth.signUp({
+        email: adminForm.email,
+        password: adminForm.password,
+        options: {
+          emailRedirectTo: getCurrentOrigin(),
+        },
+      })
+
+      if (error) throw error
+
+      const newUserId = data?.user?.id || data?.session?.user?.id
+      if (newUserId) {
+        await ensureProfileExists(newUserId, {
+          email: adminForm.email,
+          first_name: adminForm.firstName,
+          last_name: adminForm.lastName,
+          role: 'admin',
+        })
+      }
+
+      await loadAdminUsers()
+      setAdminForm({ email: '', password: '', firstName: '', lastName: '' })
+      setStatusMessage(`Admin account created for ${adminForm.email}.`)
+    } catch (error) {
+      setStatusMessage(error.message || 'Could not create admin account.')
+    }
+  }
+
+  const handleResetAdminPassword = async (email) => {
+    if (!email) return
+
+    try {
+      await supabase.auth.resetPasswordForEmail(email, { redirectTo: getCurrentOrigin() })
+      setStatusMessage(`Password reset email sent to ${email}.`)
+    } catch (error) {
+      setStatusMessage(error.message || 'Could not send password reset email.')
     }
   }
 
@@ -278,9 +449,45 @@ function App() {
     }
   }
 
+  const handleBookingStatusChange = async (bookingId, nextStatus) => {
+    if (!hasSupabaseConfig) {
+      setStatusMessage(supabaseConfigError)
+      return
+    }
+
+    try {
+      const { error } = await supabase.from('bookings').update({ status: nextStatus }).eq('id', bookingId)
+      if (error) throw error
+
+      setBookings((prev) => prev.map((booking) => (
+        booking.id === bookingId ? { ...booking, status: nextStatus } : booking
+      )))
+      setStatusMessage(`Booking marked as ${nextStatus.toLowerCase()}.`)
+    } catch (error) {
+      setStatusMessage(error.message || 'Could not update booking status.')
+    }
+  }
+
   const handleChange = (event) => {
     const { name, value } = event.target
     setForm((prev) => ({ ...prev, [name]: value }))
+  }
+
+  const handleAdminFormChange = (event) => {
+    const { name, value } = event.target
+    setAdminForm((prev) => ({ ...prev, [name]: value }))
+  }
+
+  const openAdminReview = () => {
+    if (user?.role === 'admin') {
+      setView('admin')
+      setAuthMode('user')
+      return
+    }
+
+    setAuthMode('admin')
+    setView('login')
+    setStatusMessage('Sign in with an admin account to review bookings.')
   }
 
   return (
@@ -297,7 +504,7 @@ function App() {
         <div className="hero-badges">
           <span>Register</span>
           <span>Book hours</span>
-          <span>Admin review</span>
+          <button type="button" className="tab" onClick={openAdminReview}>Admin review</button>
         </div>
       </header>
 
@@ -305,15 +512,30 @@ function App() {
         <section className="card-grid">
           <div className="card auth-card">
             <div className="tab-row">
-              <button className={view === 'register' ? 'tab active' : 'tab'} onClick={() => setView('register')}>
+              <button className={view === 'register' && authMode === 'user' ? 'tab active' : 'tab'} onClick={() => { setAuthMode('user'); setView('register') }}>
                 Register
               </button>
-              <button className={view === 'login' ? 'tab active' : 'tab'} onClick={() => setView('login')}>
+              <button className={view === 'login' && authMode === 'user' ? 'tab active' : 'tab'} onClick={() => { setAuthMode('user'); setView('login') }}>
                 Login
+              </button>
+              <button className={authMode === 'admin' ? 'tab active' : 'tab'} onClick={openAdminReview}>
+                Admin review
               </button>
             </div>
 
-            {view === 'register' ? (
+            {authMode === 'admin' ? (
+              <form onSubmit={handleAdminLogin} className="form-stack">
+                <label>
+                  Admin email
+                  <input name="username" value={form.username} onChange={handleChange} type="email" required />
+                </label>
+                <label>
+                  Admin password
+                  <input name="password" value={form.password} onChange={handleChange} type="password" required />
+                </label>
+                <button type="submit">Sign in as admin</button>
+              </form>
+            ) : view === 'register' ? (
               <form onSubmit={handleRegister} className="form-stack">
                 <label>
                   Email
@@ -331,6 +553,11 @@ function App() {
                   Last name
                   <input name="lastName" value={form.lastName} onChange={handleChange} required />
                 </label>
+                <label>
+                  Admin setup code
+                  <input name="adminSetupCode" value={form.adminSetupCode} onChange={handleChange} placeholder="Optional" />
+                </label>
+                <p className="status-line">Leave this blank unless you are creating the admin account. Use the configured admin email or setup code to become an admin.</p>
                 <button type="submit">Create account</button>
               </form>
             ) : (
@@ -360,6 +587,47 @@ function App() {
         </section>
       ) : (
         <section className="dashboard">
+          {user?.role === 'admin' ? (
+            <div className="card">
+              <h3>Admin users</h3>
+              <p className="status-line">Create additional admin accounts here. Each admin can later reset their own password from the email link.</p>
+              <form onSubmit={handleCreateAdminUser} className="form-stack">
+                <div className="two-col">
+                  <label>
+                    Email
+                    <input name="email" value={adminForm.email} onChange={handleAdminFormChange} type="email" required />
+                  </label>
+                  <label>
+                    Password
+                    <input name="password" value={adminForm.password} onChange={handleAdminFormChange} type="password" required />
+                  </label>
+                </div>
+                <div className="two-col">
+                  <label>
+                    First name
+                    <input name="firstName" value={adminForm.firstName} onChange={handleAdminFormChange} required />
+                  </label>
+                  <label>
+                    Last name
+                    <input name="lastName" value={adminForm.lastName} onChange={handleAdminFormChange} required />
+                  </label>
+                </div>
+                <button type="submit">Create admin account</button>
+              </form>
+
+              <ul className="booking-list">
+                {adminUsers.map((adminUser) => (
+                  <li key={adminUser.id}>
+                    <div>
+                      <strong>{adminUser.first_name} {adminUser.last_name}</strong>
+                      <p>{adminUser.email}</p>
+                    </div>
+                    <button type="button" onClick={() => handleResetAdminPassword(adminUser.email)}>Reset password</button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
           <div className="card stats-card">
             <h2>Welcome, {user.firstName}</h2>
             <div className="stats-grid">
@@ -419,7 +687,15 @@ function App() {
                     <p>{booking.start} to {booking.end}</p>
                     <p>{booking.notes}</p>
                   </div>
-                  <span className="status-pill">{booking.status}</span>
+                  <div className="status-actions">
+                    <span className="status-pill">{booking.status}</span>
+                    {user?.role === 'admin' ? (
+                      <div className="inline-actions">
+                        <button type="button" onClick={() => handleBookingStatusChange(booking.id, 'Approved')}>Approve</button>
+                        <button type="button" onClick={() => handleBookingStatusChange(booking.id, 'Rejected')}>Reject</button>
+                      </div>
+                    ) : null}
+                  </div>
                 </li>
               ))}
             </ul>
