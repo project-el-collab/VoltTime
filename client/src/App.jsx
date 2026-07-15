@@ -43,10 +43,17 @@ const ensureProfileExists = async (userId, profileDetails = {}) => {
     role: profileDetails.role || 'co-worker',
   }
 
-  const { error } = await supabase.from('profiles').upsert(payload, { onConflict: 'id' })
-  if (error) throw error
-
-  return payload
+  try {
+    const { error } = await supabase.from('profiles').upsert(payload, { onConflict: 'id' })
+    if (error) {
+      console.info('Profile write blocked by RLS or missing table:', error)
+      return null
+    }
+    return payload
+  } catch (error) {
+    console.info('Profile write failed:', error)
+    return null
+  }
 }
 
 function App() {
@@ -210,6 +217,10 @@ function App() {
           last_name: form.lastName,
           role,
         })
+      }
+
+      if (!userId) {
+        setStatusMessage('Registration succeeded, but the profile write was blocked by Supabase. Please enable the profiles table policy first.')
       }
 
       setUser({
