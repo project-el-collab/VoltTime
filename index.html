@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VoltTime</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Electric co-worker time booking</p>
+          <h1>VoltTime</h1>
+          <p class="intro">
+            A simple platform for co-workers to submit working hours and for
+            admins to review submissions.
+          </p>
+        </div>
+      </header>
+
+      <main class="content-grid">
+        <section class="card auth-card" id="authSection">
+          <h2>Create account or sign in</h2>
+          <div class="auth-toggle">
+            <button class="toggle-btn active" data-view="register">Register</button>
+            <button class="toggle-btn" data-view="login">Login</button>
+          </div>
+
+          <form id="registerForm" class="form-panel">
+            <label>
+              Email address
+              <input type="email" id="registerUsername" required />
+            </label>
+            <label>
+              Password
+              <input type="password" id="registerPassword" required />
+            </label>
+            <label>
+              First name
+              <input type="text" id="registerFirstName" required />
+            </label>
+            <label>
+              Last name
+              <input type="text" id="registerLastName" required />
+            </label>
+            <button type="submit">Register</button>
+          </form>
+
+          <form id="loginForm" class="form-panel hidden">
+            <label>
+              Email address
+              <input type="email" id="loginUsername" required />
+            </label>
+            <label>
+              Password
+              <input type="password" id="loginPassword" required />
+            </label>
+            <button type="submit">Login</button>
+          </form>
+        </section>
+
+        <section class="card dashboard-card hidden" id="dashboardSection">
+          <div class="dashboard-header">
+            <div>
+              <p class="eyebrow">Signed in as</p>
+              <h2 id="currentUserLabel">User</h2>
+            </div>
+            <button id="logoutButton" class="secondary">Logout</button>
+          </div>
+
+          <div class="status-box" id="statusBox"></div>
+
+          <div class="section-block">
+            <h3>Submit working hours</h3>
+            <form id="bookingForm" class="form-panel">
+              <div class="time-grid">
+                <div>
+                  <h4>Start time</h4>
+                  <label>
+                    Year
+                    <select id="startYear" required></select>
+                  </label>
+                  <label>
+                    Date
+                    <input type="date" id="startDate" required />
+                  </label>
+                  <label>
+                    Time
+                    <input type="time" id="startTime" required />
+                  </label>
+                  <label>
+                    Minutes
+                    <select id="startMinutes" required>
+                      <option value="00">00</option>
+                      <option value="15">15</option>
+                      <option value="30">30</option>
+                      <option value="45">45</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div>
+                  <h4>End time</h4>
+                  <label>
+                    Year
+                    <select id="endYear" required></select>
+                  </label>
+                  <label>
+                    Date
+                    <input type="date" id="endDate" required />
+                  </label>
+                  <label>
+                    Time
+                    <input type="time" id="endTime" required />
+                  </label>
+                  <label>
+                    Minutes
+                    <select id="endMinutes" required>
+                      <option value="00">00</option>
+                      <option value="15">15</option>
+                      <option value="30">30</option>
+                      <option value="45">45</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+
+              <label>
+                Place of working
+                <input type="text" id="place" required />
+              </label>
+              <label>
+                Project name
+                <input type="text" id="projectName" required />
+              </label>
+              <label>
+                Notes
+                <textarea id="notes" rows="4"></textarea>
+              </label>
+              <button type="submit">Submit booking</button>
+            </form>
+          </div>
+
+          <div class="section-block">
+            <h3>Your notifications</h3>
+            <ul id="notificationList" class="list"></ul>
+          </div>
+
+          <div class="section-block admin-only hidden" id="adminSection">
+            <h3>Admin review</h3>
+            <ul id="adminBookingList" class="list"></ul>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
